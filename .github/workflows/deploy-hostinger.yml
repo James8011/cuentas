@@ -1,0 +1,168 @@
+# Deploy a Hostinger — Finanzas del hogar
+#
+# Destino:
+#   /home/u118311013/domains/sirvelo.online/public_html/subdominios/hogar
+#
+# Secrets requeridos en GitHub (Settings → Secrets and variables → Actions):
+#   HOSTINGER_HOST       — host SSH (ej. 123.456.789.0 o ssh.hostinger.com)
+#   HOSTINGER_USERNAME   — u118311013
+#   HOSTINGER_SSH_PORT   — normalmente 65002
+#   HOSTINGER_SSH_KEY    — clave privada SSH completa (o usa HOSTINGER_PASSWORD)
+#   HOSTINGER_PASSWORD   — alternativa a SSH_KEY (si no usas llave)
+#
+# Una sola vez en el servidor: copia deploy/hostinger/.env.hostinger.example
+# a .env en la ruta de deploy, genera APP_KEY y configura la BD.
+
+name: Deploy Hostinger
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-hostinger
+  cancel-in-progress: true
+
+env:
+  DEPLOY_PATH: /home/u118311013/domains/sirvelo.online/public_html/subdominios/hogar
+  PHP_VERSION: '8.2'
+  # Puerto SSH Hostinger (sobrescribe con secret HOSTINGER_SSH_PORT si lo defines)
+  DEFAULT_SSH_PORT: '65002'
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        env:
+          VITE_APP_NAME: Finanzas del Hogar
+        run: npm run build
+
+      - name: Merge SPA into Laravel public/
+        run: |
+          set -euo pipefail
+          # Assets de Vite
+          rm -rf backend/public/assets
+          cp -a frontend/dist/assets backend/public/assets
+          # index.html de la SPA (convive con index.php)
+          cp -f frontend/dist/index.html backend/public/index.html
+          # favicon / estáticos del build si existen
+          if [ -f frontend/dist/favicon.svg ]; then
+            cp -f frontend/dist/favicon.svg backend/public/favicon.svg
+          fi
+          if [ -f frontend/dist/icons.svg ]; then
+            cp -f frontend/dist/icons.svg backend/public/icons.svg
+          fi
+          # .htaccess producción (API → Laravel, resto → SPA)
+          cp -f deploy/hostinger/public.htaccess backend/public/.htaccess
+          # .htaccess raíz del subdominio → public/
+          cp -f deploy/hostinger/root.htaccess backend/.htaccess.deploy-root
+
+      - name: Prepare deploy package (sin vendor/.env)
+        run: |
+          set -euo pipefail
+          RELEASE_DIR="${{ github.workspace }}/.release"
+          rm -rf "$RELEASE_DIR"
+          mkdir -p "$RELEASE_DIR"
+          rsync -a \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='.release' \
+            --exclude='node_modules' \
+            --exclude='frontend/node_modules' \
+            --exclude='frontend/dist' \
+            --exclude='backend/vendor' \
+            --exclude='backend/node_modules' \
+            --exclude='backend/.env' \
+            --exclude='backend/storage/logs/*' \
+            --exclude='backend/storage/framework/cache/data/*' \
+            --exclude='backend/storage/framework/sessions/*' \
+            --exclude='backend/storage/framework/views/*' \
+            --exclude='backend/bootstrap/cache/*.php' \
+            ./ "$RELEASE_DIR/src/"
+          mkdir -p "$RELEASE_DIR/pkg"
+          rsync -a "$RELEASE_DIR/src/backend/" "$RELEASE_DIR/pkg/"
+          cp -f "$RELEASE_DIR/src/backend/.htaccess.deploy-root" "$RELEASE_DIR/pkg/.htaccess"
+          echo "${{ github.sha }}" > "$RELEASE_DIR/pkg/DEPLOY_SHA"
+          echo "${{ github.run_id }}" > "$RELEASE_DIR/pkg/DEPLOY_RUN"
+          tar -C "$RELEASE_DIR/pkg" -czf "${{ github.workspace }}/hogar-release.tar.gz" .
+
+      - name: Upload release tarball
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.HOSTINGER_HOST }}
+          username: ${{ secrets.HOSTINGER_USERNAME }}
+          key: ${{ secrets.HOSTINGER_SSH_KEY }}
+          password: ${{ secrets.HOSTINGER_PASSWORD }}
+          port: 65002
+          source: hogar-release.tar.gz
+          target: /tmp/
+          overwrite: true
+
+      - name: Extract, composer, migrate & optimize
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.HOSTINGER_HOST }}
+          username: ${{ secrets.HOSTINGER_USERNAME }}
+          key: ${{ secrets.HOSTINGER_SSH_KEY }}
+          password: ${{ secrets.HOSTINGER_PASSWORD }}
+          port: 65002
+          script_stop: true
+          script: |
+            set -euo pipefail
+            DEPLOY_PATH="${{ env.DEPLOY_PATH }}"
+            mkdir -p "$DEPLOY_PATH" "$HOME/bin"
+            cd "$DEPLOY_PATH"
+
+            if [ ! -f .env ]; then
+              echo "ERROR: Falta $DEPLOY_PATH/.env"
+              echo "Copia deploy/hostinger/.env.hostinger.example, configura BD y APP_KEY."
+              exit 1
+            fi
+
+            cp -f .env /tmp/hogar.env.bak
+            tar -xzf /tmp/hogar-release.tar.gz -C "$DEPLOY_PATH"
+            cp -f /tmp/hogar.env.bak .env
+
+            mkdir -p storage/framework/{cache,sessions,views} storage/logs storage/app/public bootstrap/cache
+            chmod -R ug+rwx storage bootstrap/cache || true
+
+            if command -v composer >/dev/null 2>&1; then
+              COMPOSER=composer
+            elif [ -x "$HOME/bin/composer" ]; then
+              COMPOSER="$HOME/bin/composer"
+            else
+              php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
+              php composer-setup.php --install-dir="$HOME/bin" --filename=composer
+              rm -f composer-setup.php
+              COMPOSER="$HOME/bin/composer"
+            fi
+
+            $COMPOSER install --no-dev --prefer-dist --optimize-autoloader --no-interaction
+
+            php artisan migrate --force
+            php artisan storage:link || true
+            php artisan config:cache
+            php artisan route:cache
+            php artisan view:cache || true
+
+            rm -f /tmp/hogar-release.tar.gz
+            echo "Deploy OK → $DEPLOY_PATH (sha=$(cat DEPLOY_SHA 2>/dev/null || echo unknown))"

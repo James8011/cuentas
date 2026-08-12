@@ -1,0 +1,7 @@
+# Root of Hostinger subdomain folder → Laravel public/
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteRule ^(.*)$ public/$1 [L]
+</IfModule>
+
+DirectoryIndex public/index.html public/index.php
