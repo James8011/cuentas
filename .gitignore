@@ -56,3 +56,5 @@ frontend/*.local
 Homestead.json
 Homestead.yaml
 auth.json
+
+!deploy/hostinger/.env.hostinger.example
