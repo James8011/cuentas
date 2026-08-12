@@ -159,6 +159,7 @@ jobs:
             $COMPOSER install --no-dev --prefer-dist --optimize-autoloader --no-interaction
 
             php artisan migrate --force
+            php artisan db:seed --class=InitialAccessSeeder --force
             php artisan storage:link || true
             php artisan config:cache
             php artisan route:cache

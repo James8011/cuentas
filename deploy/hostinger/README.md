@@ -35,13 +35,16 @@ El puerto SSH del workflow está fijo en **65002** (estándar Hostinger). Si el 
 
 ```bash
 cd /home/u118311013/domains/sirvelo.online/public_html/subdominios/hogar
-# Tras el primer intento de deploy (o sube el example a mano):
 nano .env   # usa deploy/hostinger/.env.hostinger.example como base
+# Define SEED_ADMIN_PHONE / SEED_ADMIN_PASSWORD si quieres otros datos de acceso
 php artisan key:generate
 ```
 
 4. Apunta el subdominio `hogar.sirvelo.online` a la carpeta `subdominios/hogar`.  
 5. Lanza el workflow desde la pestaña **Actions** → *Deploy Hostinger* → *Run workflow*.
+
+El deploy ejecuta `InitialAccessSeeder`: crea permisos, usuario admin, hogar y roles
+**Administrador** (todo), **Integrante** (operación) y **Consulta** (solo lectura).
 
 ## URL esperada
 
