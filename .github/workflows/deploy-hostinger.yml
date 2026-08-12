@@ -158,9 +158,22 @@ jobs:
 
             $COMPOSER install --no-dev --prefer-dist --optimize-autoloader --no-interaction
 
+            # Si APP_KEY está vacío, generar uno (no sobrescribe si ya existe)
+            if ! grep -qE '^APP_KEY=base64:' .env; then
+              NEW_KEY=$(php artisan key:generate --force --show | tr -d '\r\n')
+              if grep -qE '^APP_KEY=' .env; then
+                sed -i "s|^APP_KEY=.*|APP_KEY=${NEW_KEY}|" .env
+              else
+                echo "APP_KEY=${NEW_KEY}" >> .env
+              fi
+              echo "APP_KEY generado automáticamente."
+            fi
+
             php artisan migrate --force
             php artisan db:seed --class=InitialAccessSeeder --force
             php artisan storage:link || true
+            php artisan config:clear
+            php artisan cache:clear || true
             php artisan config:cache
             php artisan route:cache
             php artisan view:cache || true
