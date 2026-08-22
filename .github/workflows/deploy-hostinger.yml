@@ -171,7 +171,11 @@ jobs:
 
             php artisan migrate --force
             php artisan db:seed --class=InitialAccessSeeder --force
-            php artisan storage:link || true
+            # Hostinger deshabilita exec(); artisan storage:link falla.
+            # Crear/recrear el symlink a mano (sobrevive deploys si ya existe).
+            mkdir -p storage/app/public
+            ln -sfn ../storage/app/public public/storage
+            test -d public/storage
             php artisan config:clear
             php artisan cache:clear || true
             php artisan config:cache

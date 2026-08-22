@@ -4,7 +4,9 @@ import {
   Camera,
   Check,
   ImagePlus,
+  Pencil,
   Plus,
+  Power,
   ShoppingBasket,
   Trash2,
   X,
@@ -96,6 +98,7 @@ export function MarketWorkspacePage() {
   const [selectedListId, setSelectedListId] = useState<number | null>(null)
   const [listDialog, setListDialog] = useState(false)
   const [productDialog, setProductDialog] = useState(false)
+  const [editingProductId, setEditingProductId] = useState<number | null>(null)
   const [itemDialog, setItemDialog] = useState(false)
   const [listName, setListName] = useState('')
   const [productForm, setProductForm] = useState({
@@ -165,26 +168,70 @@ export function MarketWorkspacePage() {
     onError: (e) => toast.error('No se pudo crear la lista', { description: fail(e) }),
   })
 
-  const createProduct = useMutation({
-    mutationFn: () =>
-      api.createMarketProduct(
-        id,
-        {
-          name: productForm.name.trim(),
-          unit: productForm.unit,
-          last_unit_price: money4(productForm.last_unit_price),
-          notes: productForm.notes || null,
-        },
-        productPhoto,
-      ),
-    onSuccess: async () => {
-      setProductDialog(false)
-      setProductForm({ name: '', unit: 'unit', last_unit_price: '0', notes: '' })
-      setProductPhoto(null)
-      await refresh()
-      toast.success('Producto agregado al catálogo')
+  const resetProductForm = () => {
+    setEditingProductId(null)
+    setProductForm({ name: '', unit: 'unit', last_unit_price: '0', notes: '' })
+    setProductPhoto(null)
+  }
+
+  const openCreateProduct = () => {
+    resetProductForm()
+    setProductDialog(true)
+  }
+
+  const openEditProduct = (product: MarketProduct) => {
+    setEditingProductId(product.id)
+    setProductForm({
+      name: product.name,
+      unit: product.unit,
+      last_unit_price: product.last_unit_price
+        ? String(Number(product.last_unit_price))
+        : '0',
+      notes: product.notes ?? '',
+    })
+    setProductPhoto(null)
+    setProductDialog(true)
+  }
+
+  const saveProduct = useMutation({
+    mutationFn: () => {
+      const body = {
+        name: productForm.name.trim(),
+        unit: productForm.unit,
+        last_unit_price: money4(productForm.last_unit_price),
+        notes: productForm.notes || null,
+      }
+      if (editingProductId != null) {
+        return api.updateMarketProduct(id, editingProductId, body, productPhoto)
+      }
+      return api.createMarketProduct(id, body, productPhoto)
     },
-    onError: (e) => toast.error('No se pudo crear el producto', { description: fail(e) }),
+    onSuccess: async () => {
+      const wasEdit = editingProductId != null
+      setProductDialog(false)
+      resetProductForm()
+      await refresh()
+      toast.success(wasEdit ? 'Producto actualizado' : 'Producto agregado al catálogo')
+    },
+    onError: (e) =>
+      toast.error(
+        editingProductId != null ? 'No se pudo actualizar el producto' : 'No se pudo crear el producto',
+        { description: fail(e) },
+      ),
+  })
+
+  const toggleProductActive = useMutation({
+    mutationFn: (product: MarketProduct) =>
+      api.updateMarketProduct(id, product.id, { is_active: !product.is_active }),
+    onSuccess: async (_res, product) => {
+      await refresh()
+      toast.success(product.is_active ? 'Producto desactivado' : 'Producto reactivado', {
+        description: product.is_active
+          ? 'Ya no aparecerá al agregar ítems a una lista.'
+          : 'Volvió a estar disponible en el catálogo.',
+      })
+    },
+    onError: (e) => toast.error('No se pudo cambiar el estado', { description: fail(e) }),
   })
 
   const addItem = useMutation({
@@ -294,6 +341,7 @@ export function MarketWorkspacePage() {
   const lists = listsQuery.data?.data ?? []
   const products = productsQuery.data?.data ?? []
   const activeProducts = products.filter((p) => p.is_active)
+  const inactiveProducts = products.filter((p) => !p.is_active)
   const list = listQuery.data?.data
   const budget = list?.budget ?? budgetQuery.data?.data
   const selectedCatalogProduct = activeProducts.find(
@@ -400,25 +448,58 @@ export function MarketWorkspacePage() {
           <Panel title="Catálogo de productos">
             {canManage ? (
               <div className="mb-4">
-                <Button
-                  size="sm"
-                  onClick={() => {
-                    setProductForm({ name: '', unit: 'unit', last_unit_price: '0', notes: '' })
-                    setProductPhoto(null)
-                    setProductDialog(true)
-                  }}
-                >
+                <Button size="sm" onClick={openCreateProduct}>
                   <Plus className="h-4 w-4" /> Nuevo producto
                 </Button>
               </div>
             ) : null}
             <div className="grid gap-3 sm:grid-cols-2">
               {activeProducts.length === 0 ? (
-                <p className="text-sm font-semibold text-slate-400">Aún no hay productos</p>
+                <p className="text-sm font-semibold text-slate-400">Aún no hay productos activos</p>
               ) : (
-                activeProducts.map((p) => <ProductCard key={p.id} product={p} currency={currency} />)
+                activeProducts.map((p) => (
+                  <ProductCard
+                    key={p.id}
+                    product={p}
+                    currency={currency}
+                    canManage={canManage}
+                    busy={toggleProductActive.isPending || saveProduct.isPending}
+                    onEdit={() => openEditProduct(p)}
+                    onToggleActive={() => {
+                      if (
+                        p.is_active &&
+                        !window.confirm(
+                          `¿Desactivar “${p.name}”? Dejará de aparecer al agregar ítems a una lista.`,
+                        )
+                      ) {
+                        return
+                      }
+                      toggleProductActive.mutate(p)
+                    }}
+                  />
+                ))
               )}
             </div>
+            {canManage && inactiveProducts.length > 0 ? (
+              <div className="mt-6 space-y-3">
+                <p className="text-xs font-black uppercase tracking-wide text-slate-400">
+                  Desactivados ({inactiveProducts.length})
+                </p>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {inactiveProducts.map((p) => (
+                    <ProductCard
+                      key={p.id}
+                      product={p}
+                      currency={currency}
+                      canManage={canManage}
+                      busy={toggleProductActive.isPending || saveProduct.isPending}
+                      onEdit={() => openEditProduct(p)}
+                      onToggleActive={() => toggleProductActive.mutate(p)}
+                    />
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </Panel>
         ) : (
           <Panel title="Listas de mercado">
@@ -482,11 +563,19 @@ export function MarketWorkspacePage() {
 
       <Dialog
         open={productDialog}
-        onOpenChange={(open) => !open && setProductDialog(false)}
-        title="Nuevo producto"
+        onOpenChange={(open) => {
+          if (!open) {
+            setProductDialog(false)
+            resetProductForm()
+          }
+        }}
+        title={editingProductId != null ? 'Editar producto' : 'Nuevo producto'}
         footer={
-          <Button disabled={createProduct.isPending || !productForm.name.trim()} onClick={() => createProduct.mutate()}>
-            {createProduct.isPending ? 'Guardando…' : 'Guardar'}
+          <Button
+            disabled={saveProduct.isPending || !productForm.name.trim()}
+            onClick={() => saveProduct.mutate()}
+          >
+            {saveProduct.isPending ? 'Guardando…' : 'Guardar'}
           </Button>
         }
       >
@@ -1036,9 +1125,29 @@ function CatalogProductPicker({
   )
 }
 
-function ProductCard({ product, currency }: { product: MarketProduct; currency: string }) {
+function ProductCard({
+  product,
+  currency,
+  canManage = false,
+  busy = false,
+  onEdit,
+  onToggleActive,
+}: {
+  product: MarketProduct
+  currency: string
+  canManage?: boolean
+  busy?: boolean
+  onEdit?: () => void
+  onToggleActive?: () => void
+}) {
   return (
-    <div className="flex gap-3 rounded-2xl border border-slate-100 bg-slate-50 p-3">
+    <div
+      className={`flex gap-3 rounded-2xl border p-3 ${
+        product.is_active
+          ? 'border-slate-100 bg-slate-50'
+          : 'border-dashed border-slate-200 bg-white opacity-80'
+      }`}
+    >
       {product.photo_url ? (
         <img
           src={product.photo_url}
@@ -1050,15 +1159,48 @@ function ProductCard({ product, currency }: { product: MarketProduct; currency: 
           <Camera className="h-6 w-6" />
         </div>
       )}
-      <div className="min-w-0">
-        <p className="font-black text-slate-800">{product.name}</p>
-        <p className="text-xs font-semibold text-slate-500">
-          {unitLabel(product.unit)}
-          {product.last_unit_price
-            ? ` · ${formatMoney(product.last_unit_price, currency)}`
-            : ''}
-        </p>
-        {product.notes ? <p className="text-xs text-slate-400">{product.notes}</p> : null}
+      <div className="min-w-0 flex-1">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <p className="font-black text-slate-800">{product.name}</p>
+            <p className="text-xs font-semibold text-slate-500">
+              {unitLabel(product.unit)}
+              {product.last_unit_price
+                ? ` · ${formatMoney(product.last_unit_price, currency)}`
+                : ''}
+            </p>
+            {product.notes ? <p className="text-xs text-slate-400">{product.notes}</p> : null}
+            {!product.is_active ? (
+              <p className="mt-1 text-[11px] font-bold uppercase tracking-wide text-amber-600">
+                Desactivado
+              </p>
+            ) : null}
+          </div>
+          {canManage ? (
+            <div className="flex shrink-0 gap-1">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={busy}
+                aria-label={`Editar ${product.name}`}
+                onClick={onEdit}
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={busy}
+                aria-label={product.is_active ? `Desactivar ${product.name}` : `Reactivar ${product.name}`}
+                onClick={onToggleActive}
+              >
+                <Power className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          ) : null}
+        </div>
       </div>
     </div>
   )

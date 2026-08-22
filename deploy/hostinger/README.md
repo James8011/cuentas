@@ -12,7 +12,7 @@ El workflow [`.github/workflows/deploy-hostinger.yml`](../.github/workflows/depl
 2. Copia la SPA a `backend/public/` (`index.html` + `assets/`)  
 3. Empaqueta el backend (sin `vendor` ni `.env`)  
 4. Sube el tarball por SCP/SSH  
-5. En el servidor: `composer install --no-dev`, `php artisan migrate --force`, caches y `storage:link`
+5. En el servidor: `composer install --no-dev`, `php artisan migrate --force`, caches y symlink `public/storage` → `storage/app/public` (vía `ln -sfn`; `artisan storage:link` falla porque Hostinger deshabilita `exec()`)
 
 ## Secrets de GitHub
 
